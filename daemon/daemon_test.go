@@ -13,19 +13,20 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/stretchr/testify/assert"
-	"github.com/weaveworks/flux"
+
 	"github.com/weaveworks/flux/api/v10"
 	"github.com/weaveworks/flux/api/v11"
 	"github.com/weaveworks/flux/api/v6"
 	"github.com/weaveworks/flux/api/v9"
 	"github.com/weaveworks/flux/cluster"
 	"github.com/weaveworks/flux/cluster/kubernetes"
-	kresource "github.com/weaveworks/flux/cluster/kubernetes/resource"
+	"github.com/weaveworks/flux/cluster/mock"
 	"github.com/weaveworks/flux/event"
 	"github.com/weaveworks/flux/git"
 	"github.com/weaveworks/flux/git/gittest"
 	"github.com/weaveworks/flux/image"
 	"github.com/weaveworks/flux/job"
+	"github.com/weaveworks/flux/manifests"
 	"github.com/weaveworks/flux/policy"
 	"github.com/weaveworks/flux/registry"
 	registryMock "github.com/weaveworks/flux/registry/mock"
@@ -154,7 +155,7 @@ func TestDaemon_ListWorkloadsWithOptions(t *testing.T) {
 	t.Run("filter id", func(t *testing.T) {
 		s, err := d.ListServicesWithOptions(ctx, v11.ListServicesOptions{
 			Namespace: "",
-			Services:  []flux.ResourceID{flux.MustParseResourceID(wl)}})
+			Services:  []resource.ID{resource.MustParseID(wl)}})
 		if err != nil {
 			t.Fatalf("Error: %s", err.Error())
 		}
@@ -166,7 +167,7 @@ func TestDaemon_ListWorkloadsWithOptions(t *testing.T) {
 	t.Run("filter id and namespace", func(t *testing.T) {
 		_, err := d.ListServicesWithOptions(ctx, v11.ListServicesOptions{
 			Namespace: "foo",
-			Services:  []flux.ResourceID{flux.MustParseResourceID(wl)}})
+			Services:  []resource.ID{resource.MustParseID(wl)}})
 		if err == nil {
 			t.Fatal("Expected error but got nil")
 		}
@@ -175,7 +176,7 @@ func TestDaemon_ListWorkloadsWithOptions(t *testing.T) {
 	t.Run("filter unsupported id kind", func(t *testing.T) {
 		_, err := d.ListServicesWithOptions(ctx, v11.ListServicesOptions{
 			Namespace: "foo",
-			Services:  []flux.ResourceID{flux.MustParseResourceID("default:unsupportedkind/goodbyeworld")}})
+			Services:  []resource.ID{resource.MustParseID("default:unsupportedkind/goodbyeworld")}})
 		if err == nil {
 			t.Fatal("Expected error but got nil")
 		}
@@ -193,7 +194,7 @@ func TestDaemon_ListImagesWithOptions(t *testing.T) {
 	specAll := update.ResourceSpec(update.ResourceSpecAll)
 
 	// Service 1
-	svcID, err := flux.ParseResourceID(wl)
+	svcID, err := resource.ParseID(wl)
 	assert.NoError(t, err)
 	currentImageRef, err := image.ParseRef(currentHelloImage)
 	assert.NoError(t, err)
@@ -203,7 +204,7 @@ func TestDaemon_ListImagesWithOptions(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Service 2
-	anotherSvcID, err := flux.ParseResourceID(anotherWl)
+	anotherSvcID, err := resource.ParseID(anotherWl)
 	assert.NoError(t, err)
 	anotherImageRef, err := image.ParseRef(anotherImage)
 	assert.NoError(t, err)
@@ -514,8 +515,8 @@ func TestDaemon_PolicyUpdate(t *testing.T) {
 			return false
 		}
 		defer co.Clean()
-		dirs := co.ManifestDirs()
-		m, err := d.Manifests.LoadManifests(co.Dir(), dirs)
+		cm := manifests.NewRawFiles(co.Dir(), co.ManifestDirs(), d.Manifests)
+		m, err := cm.GetAllResourcesByID(context.TODO())
 		if err != nil {
 			t.Fatalf("Error: %s", err.Error())
 		}
@@ -575,7 +576,7 @@ func TestDaemon_Automated(t *testing.T) {
 	w := newWait(t)
 
 	workload := cluster.Workload{
-		ID: flux.MakeResourceID(ns, "deployment", "helloworld"),
+		ID: resource.MakeID(ns, "deployment", "helloworld"),
 		Containers: cluster.ContainersOrExcuse{
 			Containers: []resource.Container{
 				{
@@ -585,7 +586,7 @@ func TestDaemon_Automated(t *testing.T) {
 			},
 		},
 	}
-	k8s.SomeWorkloadsFunc = func([]flux.ResourceID) ([]cluster.Workload, error) {
+	k8s.SomeWorkloadsFunc = func(ctx context.Context, ids []resource.ID) ([]cluster.Workload, error) {
 		return []cluster.Workload{workload}, nil
 	}
 	start()
@@ -599,7 +600,7 @@ func TestDaemon_Automated_semver(t *testing.T) {
 	defer clean()
 	w := newWait(t)
 
-	resid := flux.MustParseResourceID("default:deployment/semver")
+	resid := resource.MustParseID("default:deployment/semver")
 	workload := cluster.Workload{
 		ID: resid,
 		Containers: cluster.ContainersOrExcuse{
@@ -611,7 +612,7 @@ func TestDaemon_Automated_semver(t *testing.T) {
 			},
 		},
 	}
-	k8s.SomeWorkloadsFunc = func([]flux.ResourceID) ([]cluster.Workload, error) {
+	k8s.SomeWorkloadsFunc = func(ctx context.Context, ids []resource.ID) ([]cluster.Workload, error) {
 		return []cluster.Workload{workload}, nil
 	}
 	start()
@@ -632,21 +633,11 @@ func mustParseImageRef(ref string) image.Ref {
 	return r
 }
 
-type anonNamespacer func(kresource.KubeManifest) string
-
-func (fn anonNamespacer) EffectiveNamespace(m kresource.KubeManifest, _ kubernetes.ResourceScopes) (string, error) {
-	return fn(m), nil
-}
-
-var alwaysDefault anonNamespacer = func(kresource.KubeManifest) string {
-	return "default"
-}
-
-func mockDaemon(t *testing.T) (*Daemon, func(), func(), *cluster.Mock, *mockEventWriter, func(func())) {
+func mockDaemon(t *testing.T) (*Daemon, func(), func(), *mock.Mock, *mockEventWriter, func(func())) {
 	logger := log.NewNopLogger()
 
 	singleService := cluster.Workload{
-		ID: flux.MustParseResourceID(wl),
+		ID: resource.MustParseID(wl),
 		Containers: cluster.ContainersOrExcuse{
 			Containers: []resource.Container{
 				{
@@ -659,7 +650,7 @@ func mockDaemon(t *testing.T) (*Daemon, func(), func(), *cluster.Mock, *mockEven
 	multiService := []cluster.Workload{
 		singleService,
 		{
-			ID: flux.MakeResourceID("another", "deployment", "service"),
+			ID: resource.MakeID("another", "deployment", "service"),
 			Containers: cluster.ContainersOrExcuse{
 				Containers: []resource.Container{
 					{
@@ -680,10 +671,10 @@ func mockDaemon(t *testing.T) (*Daemon, func(), func(), *cluster.Mock, *mockEven
 		NotesRef:  "fluxtest",
 	}
 
-	var k8s *cluster.Mock
+	var k8s *mock.Mock
 	{
-		k8s = &cluster.Mock{}
-		k8s.AllWorkloadsFunc = func(maybeNamespace string) ([]cluster.Workload, error) {
+		k8s = &mock.Mock{}
+		k8s.AllWorkloadsFunc = func(ctx context.Context, maybeNamespace string) ([]cluster.Workload, error) {
 			if maybeNamespace == ns {
 				return []cluster.Workload{
 					singleService,
@@ -693,10 +684,10 @@ func mockDaemon(t *testing.T) (*Daemon, func(), func(), *cluster.Mock, *mockEven
 			}
 			return []cluster.Workload{}, nil
 		}
-		k8s.IsAllowedResourceFunc = func(flux.ResourceID) bool { return true }
-		k8s.ExportFunc = func() ([]byte, error) { return testBytes, nil }
+		k8s.IsAllowedResourceFunc = func(resource.ID) bool { return true }
+		k8s.ExportFunc = func(ctx context.Context) ([]byte, error) { return testBytes, nil }
 		k8s.PingFunc = func() error { return nil }
-		k8s.SomeWorkloadsFunc = func([]flux.ResourceID) ([]cluster.Workload, error) {
+		k8s.SomeWorkloadsFunc = func(ctx context.Context, ids []resource.ID) ([]cluster.Workload, error) {
 			return []cluster.Workload{
 				singleService,
 			}, nil
@@ -731,19 +722,21 @@ func mockDaemon(t *testing.T) (*Daemon, func(), func(), *cluster.Mock, *mockEven
 	// Jobs queue (starts itself)
 	jobs := job.NewQueue(jshutdown, jwg)
 
+	manifests := kubernetes.NewManifests(kubernetes.ConstNamespacer("default"), log.NewLogfmtLogger(os.Stdout))
+
 	// Finally, the daemon
 	d := &Daemon{
 		Repo:           repo,
 		GitConfig:      params,
 		Cluster:        k8s,
-		Manifests:      &kubernetes.Manifests{Namespacer: alwaysDefault},
+		Manifests:      manifests,
 		Registry:       imageRegistry,
 		V:              testVersion,
 		Jobs:           jobs,
 		JobStatusCache: &job.StatusCache{Size: 100},
 		EventWriter:    events,
 		Logger:         logger,
-		LoopVars:       &LoopVars{GitOpTimeout: timeout},
+		LoopVars:       &LoopVars{GitTimeout: timeout},
 	}
 
 	start := func() {
@@ -863,9 +856,8 @@ func (w *wait) ForImageTag(t *testing.T, d *Daemon, workload, container, tag str
 			return false
 		}
 		defer co.Clean()
-
-		dirs := co.ManifestDirs()
-		resources, err := d.Manifests.LoadManifests(co.Dir(), dirs)
+		cm := manifests.NewRawFiles(co.Dir(), co.ManifestDirs(), d.Manifests)
+		resources, err := cm.GetAllResourcesByID(context.TODO())
 		assert.NoError(t, err)
 
 		workload, ok := resources[workload].(resource.Workload)
@@ -894,8 +886,8 @@ func updateImage(ctx context.Context, d *Daemon, t *testing.T) job.ID {
 func updatePolicy(ctx context.Context, t *testing.T, d *Daemon) job.ID {
 	return updateManifest(ctx, t, d, update.Spec{
 		Type: update.Policy,
-		Spec: policy.Updates{
-			flux.MustParseResourceID("default:deployment/helloworld"): {
+		Spec: resource.PolicyUpdates{
+			resource.MustParseID("default:deployment/helloworld"): {
 				Add: policy.Set{
 					policy.Locked: "true",
 				},

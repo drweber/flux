@@ -7,15 +7,14 @@ import (
 	"github.com/go-kit/kit/log"
 	"github.com/pkg/errors"
 
-	"github.com/weaveworks/flux"
 	"github.com/weaveworks/flux/cluster"
 	"github.com/weaveworks/flux/policy"
 	"github.com/weaveworks/flux/resource"
 	"github.com/weaveworks/flux/update"
 )
 
-func (d *Daemon) pollForNewImages(logger log.Logger) {
-	logger.Log("msg", "polling images")
+func (d *Daemon) pollForNewAutomatedWorkloadImages(logger log.Logger) {
+	logger.Log("msg", "polling for new images for automated workloads")
 
 	ctx := context.Background()
 
@@ -29,7 +28,7 @@ func (d *Daemon) pollForNewImages(logger log.Logger) {
 		return
 	}
 	// Find images to check
-	workloads, err := d.Cluster.SomeWorkloads(candidateWorkloads.IDs())
+	workloads, err := d.Cluster.SomeWorkloads(ctx, candidateWorkloads.IDs())
 	if err != nil {
 		logger.Log("error", errors.Wrap(err, "checking workloads for new images"))
 		return
@@ -48,9 +47,9 @@ func (d *Daemon) pollForNewImages(logger log.Logger) {
 	}
 }
 
-type resources map[flux.ResourceID]resource.Resource
+type resources map[resource.ID]resource.Resource
 
-func (r resources) IDs() (ids []flux.ResourceID) {
+func (r resources) IDs() (ids []resource.ID) {
 	for k, _ := range r {
 		ids = append(ids, k)
 	}
@@ -66,7 +65,7 @@ func (d *Daemon) getAllowedAutomatedResources(ctx context.Context) (resources, e
 		return nil, err
 	}
 
-	result := map[flux.ResourceID]resource.Resource{}
+	result := map[resource.ID]resource.Resource{}
 	for _, resource := range resources {
 		policies := resource.Policies()
 		if policies.Has(policy.Automated) && !policies.Has(policy.Locked) && !policies.Has(policy.Ignore) {
@@ -103,13 +102,13 @@ func calculateChanges(logger log.Logger, candidateWorkloads resources, workloads
 					continue containers
 				}
 				current := repoMetadata.FindImageWithRef(currentImageID)
-				if current.CreatedAt.IsZero() || latest.CreatedAt.IsZero() {
-					logger.Log("warning", "image with zero created timestamp", "current", fmt.Sprintf("%s (%s)", current.ID, current.CreatedAt), "latest", fmt.Sprintf("%s (%s)", latest.ID, latest.CreatedAt), "action", "skip container")
+				if pattern.RequiresTimestamp() && (current.CreatedTS().IsZero() || latest.CreatedTS().IsZero()) {
+					logger.Log("warning", "image with zero created timestamp", "current", fmt.Sprintf("%s (%s)", current.ID, current.CreatedTS()), "latest", fmt.Sprintf("%s (%s)", latest.ID, latest.CreatedTS()), "action", "skip container")
 					continue containers
 				}
 				newImage := currentImageID.WithNewTag(latest.ID.Tag)
 				changes.Add(workload.ID, container, newImage)
-				logger.Log("info", "added update to automation run", "new", newImage, "reason", fmt.Sprintf("latest %s (%s) > current %s (%s)", latest.ID.Tag, latest.CreatedAt, currentImageID.Tag, current.CreatedAt))
+				logger.Log("info", "added update to automation run", "new", newImage, "reason", fmt.Sprintf("latest %s (%s) > current %s (%s)", latest.ID.Tag, latest.CreatedTS(), currentImageID.Tag, current.CreatedTS()))
 			}
 		}
 	}

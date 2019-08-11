@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/weaveworks/flux"
 	fluxerr "github.com/weaveworks/flux/errors"
 	"github.com/weaveworks/flux/job"
+	"github.com/weaveworks/flux/resource"
 )
 
 type SyncErrors struct {
-	errs map[flux.ResourceID]error
+	errs map[resource.ID]error
 	mu   sync.Mutex
 }
 
@@ -28,7 +28,7 @@ giving this error:
 Check that any files mentioned are well-formed, and resources are not
 defined more than once. It's also worth reviewing
 
-    https://github.com/weaveworks/flux/blob/master/site/requirements.md
+    https://github.com/weaveworks/flux/blob/master/docs/requirements.md
 
 to make sure you're not running into any corner cases.
 
@@ -64,6 +64,24 @@ daemon if possible:
 
     https://github.com/weaveworks/flux/issues
 
+`,
+	}
+}
+
+func unsignedHeadRevisionError(latestValidRevision, headRevision string) error {
+	return &fluxerr.Error{
+		Type: fluxerr.User,
+		Err:  fmt.Errorf("HEAD revision is unsigned"),
+		Help: `HEAD is not a verified commit.
+
+The branch HEAD in the git repo is not verified, and fluxd is unable to
+make a change on top of it. The last verified commit was
+
+    ` + latestValidRevision + `
+
+HEAD is 
+
+    ` + headRevision + `.
 `,
 	}
 }

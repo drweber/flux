@@ -1,3 +1,117 @@
+## 0.12.0 (2019-08-08)
+
+### Improvements
+
+ - Updated Flux to `1.13.3` and the Helm operator to `0.10.1`
+   [fluxcd/flux#2296](https://github.com/fluxcd/flux/pull/2296)
+   [fluxcd/flux#2318](https://github.com/fluxcd/flux/pull/2318)
+ - Add manifest generation to helm chart
+   [fluxcd/flux#2332](https://github.com/fluxcd/flux/pull/2332)
+   [fluxcd/flux#2335](https://github.com/fluxcd/flux/pull/2335)
+ - Let a named cluster role be used in chart
+   [fluxcd/flux#2266](https://github.com/fluxcd/flux/pull/2266)
+
+## 0.11.0 (2019-07-10)
+
+### Improvements
+
+ - Updated Flux to `1.13.2` and the Helm operator to `0.10.0`
+   [fluxcd/flux#2235](https://github.com/fluxcd/flux/pull/2235)
+   [fluxcd/flux#2237](https://github.com/fluxcd/flux/pull/2237)
+ - Changed from DockerHub organization `weaveworks` -> `fluxcd`
+   [fluxcd/flux#2224](https://github.com/fluxcd/flux/pull/2224)
+ - Updated `HelmRelease` CRD to support rollbacks
+   [fluxcd/flux#2006](https://github.com/fluxcd/flux/pull/2006)
+ - Allow namespace scoping for both Flux and the Helm operator
+   [fluxcd/flux#2206](https://github.com/fluxcd/flux/pull/2206)
+   [fluxcd/flux#2209](https://github.com/fluxcd/flux/pull/2209)
+ - Removed long deprecated `FluxHelmRelease` CRD and disabled CRD
+   creation as the default to follow our own best practices
+   [fluxcd/flux#2190](https://github.com/fluxcd/flux/pull/2190)
+ - Enable `PodSecurityPolicy`
+   [fluxcd/flux#2223](https://github.com/fluxcd/flux/pull/2223)
+   [fluxcd/flux#2225](https://github.com/fluxcd/flux/pull/2225)
+ - Support new Flux `--registry-use-labels` flag (`registry.useTimestampLabels`)
+   [fluxcd/flux#2176](https://github.com/fluxcd/flux/pull/2176)
+ - Support new Helm operator `--workers` flag (`helmOperator.workers`)
+   [fluxcd/flux#2236](https://github.com/fluxcd/flux/pull/2236)
+
+## 0.10.2 (2019-06-27)
+
+### Improvements
+
+ - Updated Flux to `1.13.1`
+   [weaveworks/flux#2203](https://github.com/weaveworks/flux/pull/2203)
+
+## 0.10.1 (2019-06-16)
+
+### Bug fixes
+
+ - Fix memcached security context
+   [weaveworks/flux#2163](https://github.com/weaveworks/flux/pull/2163)
+
+## 0.10.0 (2019-06-14)
+
+### Improvements
+
+ - Updated Flux to `1.13.0` and Helm operator to `0.9.2`
+   [weaveworks/flux#2150](https://github.com/weaveworks/flux/pull/2150)
+   [weaveworks/flux#2153](https://github.com/weaveworks/flux/pull/2153)
+ - Updated memcached to `1.5.15` and configured default security context
+   [weaveworks/flux#2107](https://github.com/weaveworks/flux/pull/2107)
+ - Toggle garbage collection dry-run
+   [weaveworks/flux#2063](https://github.com/weaveworks/flux/pull/2063)
+ - Toggle git signature verification
+   [weaveworks/flux#2053](https://github.com/weaveworks/flux/pull/2053)
+ - Support `dnsPolicy` and `dnsConfig` in Flux daemon deployment
+   [weaveworks/flux#2116](https://github.com/weaveworks/flux/pull/2116)
+ - Support configurable log format
+   [weaveworks/flux#2138](https://github.com/weaveworks/flux/pull/2138)
+ - Support additional sidecar containers
+   [weaveworks/flux#2130](https://github.com/weaveworks/flux/pull/2130)
+
+### Bug fixes
+
+ - Fix `extraVolumes` indentation
+   [weaveworks/flux#2102](https://github.com/weaveworks/flux/pull/2102)
+
+## 0.9.5 (2019-05-22)
+
+ - Updated Flux to `1.12.3`
+   [weaveworks/flux#2076](https://github.com/weaveworks/flux/pull/2076)
+
+## 0.9.4 (2019-05-09)
+
+ - Updated Helm operator to `0.9.1`
+   [weaveworks/flux#2032](https://github.com/weaveworks/flux/pull/2032)
+
+## 0.9.3 (2019-05-08)
+
+### Improvements
+
+ - Updated Flux to `1.12.2` and Helm operator to `0.9.0`
+   [weaveworks/flux#2025](https://github.com/weaveworks/flux/pull/2025)
+ - Mount sub path of repositories secret
+   [weaveworks/flux#2014](https://github.com/weaveworks/flux/pull/2014)
+ - Toggle garbage collection
+   [weaveworks/flux#2004](https://github.com/weaveworks/flux/pull/2004)
+
+## 0.9.2 (2019-04-29)
+
+### Improvements
+
+ - Updated Flux to `1.12.1`
+   [weaveworks/flux#1993](https://github.com/weaveworks/flux/pull/1993)
+
+## 0.9.1 (2019-04-17)
+
+### Improvements
+
+ - Add the `status` subresource to HelmRelease CRD
+   [weaveworks/flux#1906](https://github.com/weaveworks/flux/pull/1906)
+ - Switch image registry from Quay to Docker Hub
+   [weaveworks/flux#1949](https://github.com/weaveworks/flux/pull/1949)
+
 ## 0.9.0 (2019-04-11)
 
 ### Improvements

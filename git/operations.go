@@ -3,15 +3,14 @@ package git
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
-
-	"context"
+	"sync"
 
 	"github.com/pkg/errors"
 )
@@ -25,8 +24,18 @@ var exemptedTraceCommands = []string{
 	// "config",
 }
 
-// Env vars that are allowed to be inherited from the os
-var allowedEnvVars = []string{"http_proxy", "https_proxy", "no_proxy", "HOME", "GNUPGHOME"}
+// Env vars that are allowed to be inherited from the OS
+var allowedEnvVars = []string{
+	// these are for people using (no) proxies
+	"http_proxy", "https_proxy", "no_proxy", "GIT_PROXY_COMMAND",
+	// these are needed for GPG to find its files
+	"HOME", "GNUPGHOME",
+	// these for the git-secrets helper
+	"SECRETS_DIR", "SECRETS_EXTENSION",
+	// these are for Google Cloud SDK to find its files (which will
+	// have to be mounted, if running in a container)
+	"CLOUDSDK_CONFIG", "CLOUDSDK_PYTHON",
+}
 
 type gitCmdConfig struct {
 	dir string
@@ -75,12 +84,20 @@ func checkout(ctx context.Context, workingDir, ref string) error {
 	return execGitCmd(ctx, args, gitCmdConfig{dir: workingDir})
 }
 
+func add(ctx context.Context, workingDir, path string) error {
+	args := []string{"add", "--", path}
+	return execGitCmd(ctx, args, gitCmdConfig{dir: workingDir})
+}
+
 // checkPush sanity-checks that we can write to the upstream repo
 // (being able to `clone` is an adequate check that we can read the
 // upstream).
-func checkPush(ctx context.Context, workingDir, upstream string) error {
+func checkPush(ctx context.Context, workingDir, upstream, branch string) error {
 	// --force just in case we fetched the tag from upstream when cloning
 	args := []string{"tag", "--force", CheckPushTag}
+	if branch != "" {
+		args = append(args, branch)
+	}
 	if err := execGitCmd(ctx, args, gitCmdConfig{dir: workingDir}); err != nil {
 		return errors.Wrap(err, "tag for write check")
 	}
@@ -90,6 +107,14 @@ func checkPush(ctx context.Context, workingDir, upstream string) error {
 	}
 	args = []string{"push", "--delete", upstream, "tag", CheckPushTag}
 	return execGitCmd(ctx, args, gitCmdConfig{dir: workingDir})
+}
+
+func secretUnseal(ctx context.Context, workingDir string) error {
+	args := []string{"secret", "reveal", "-f"}
+	if err := execGitCmd(ctx, args, gitCmdConfig{dir: workingDir}); err != nil {
+		return errors.Wrap(err, "git secret reveal -f")
+	}
+	return nil
 }
 
 func commit(ctx context.Context, workingDir string, commitAction CommitAction) error {
@@ -209,7 +234,7 @@ func refRevision(ctx context.Context, workingDir, ref string) (string, error) {
 // Return the revisions and one-line log commit messages
 func onelinelog(ctx context.Context, workingDir, refspec string, subdirs []string) ([]Commit, error) {
 	out := &bytes.Buffer{}
-	args := []string{"log", "--pretty=format:%GK|%H|%s", refspec}
+	args := []string{"log", "--pretty=format:%GK|%G?|%H|%s", refspec}
 	args = append(args, "--")
 	if len(subdirs) > 0 {
 		args = append(args, subdirs...)
@@ -226,19 +251,22 @@ func splitLog(s string) ([]Commit, error) {
 	lines := splitList(s)
 	commits := make([]Commit, len(lines))
 	for i, m := range lines {
-		parts := strings.SplitN(m, "|", 3)
-		commits[i].SigningKey = parts[0]
-		commits[i].Revision = parts[1]
-		commits[i].Message = parts[2]
+		parts := strings.SplitN(m, "|", 4)
+		commits[i].Signature = Signature{
+			Key:    parts[0],
+			Status: parts[1],
+		}
+		commits[i].Revision = parts[2]
+		commits[i].Message = parts[3]
 	}
 	return commits, nil
 }
 
 func splitList(s string) []string {
-	outStr := strings.TrimSpace(s)
-	if outStr == "" {
+	if strings.TrimSpace(s) == "" {
 		return []string{}
 	}
+	outStr := strings.TrimSuffix(s, "\n")
 	return strings.Split(outStr, "\n")
 }
 
@@ -260,11 +288,21 @@ func moveTagAndPush(ctx context.Context, workingDir, tag, upstream string, tagAc
 	return nil
 }
 
-func verifyTag(ctx context.Context, workingDir, tag string) error {
-	var env []string
-	args := []string{"verify-tag", tag}
-	if err := execGitCmd(ctx, args, gitCmdConfig{dir: workingDir, env: env}); err != nil {
-		return errors.Wrap(err, "verifying tag "+tag)
+// Verify tag signature and return the revision it points to
+func verifyTag(ctx context.Context, workingDir, tag string) (string, error) {
+	out := &bytes.Buffer{}
+	args := []string{"verify-tag", "--format", "%(object)", tag}
+	if err := execGitCmd(ctx, args, gitCmdConfig{dir: workingDir, out: out}); err != nil {
+		return "", errors.Wrap(err, "verifying tag "+tag)
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+// Verify commit signature
+func verifyCommit(ctx context.Context, workingDir, commit string) error {
+	args := []string{"verify-commit", commit}
+	if err := execGitCmd(ctx, args, gitCmdConfig{dir: workingDir}); err != nil {
+		return fmt.Errorf("failed to verify commit %s", commit)
 	}
 	return nil
 }
@@ -287,7 +325,7 @@ func changed(ctx context.Context, workingDir, ref string, subPaths []string) ([]
 }
 
 // traceGitCommand returns a log line that can be useful when debugging and developing git activity
-func traceGitCommand(args []string, config gitCmdConfig, stdout string, stderr string) string {
+func traceGitCommand(args []string, config gitCmdConfig, stdOutAndStdErr string) string {
 	for _, exemptedCommand := range exemptedTraceCommands {
 		if exemptedCommand == args[0] {
 			return ""
@@ -302,17 +340,44 @@ func traceGitCommand(args []string, config gitCmdConfig, stdout string, stderr s
 	}
 
 	command := `git ` + strings.Join(args, " ")
-	out := prepare(stdout)
-	err := prepare(stderr)
+	out := prepare(stdOutAndStdErr)
 
 	return fmt.Sprintf(
-		"TRACE: command=%q out=%q err=%q dir=%q env=%q",
+		"TRACE: command=%q out=%q dir=%q env=%q",
 		command,
 		out,
-		err,
 		config.dir,
 		strings.Join(config.env, ","),
 	)
+}
+
+type threadSafeBuffer struct {
+	buf bytes.Buffer
+	mu  sync.Mutex
+}
+
+func (b *threadSafeBuffer) Write(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *threadSafeBuffer) Read(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Read(p)
+}
+
+func (b *threadSafeBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Bytes()
+}
+
+func (b *threadSafeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // execGitCmd runs a `git` command with the supplied arguments.
@@ -323,30 +388,26 @@ func execGitCmd(ctx context.Context, args []string, config gitCmdConfig) error {
 		c.Dir = config.dir
 	}
 	c.Env = append(env(), config.env...)
-	c.Stdout = ioutil.Discard
+	stdOutAndStdErr := &threadSafeBuffer{}
+	c.Stdout = stdOutAndStdErr
+	c.Stderr = stdOutAndStdErr
 	if config.out != nil {
-		c.Stdout = config.out
-	}
-	errOut := &bytes.Buffer{}
-	c.Stderr = errOut
-
-	traceStdout := &bytes.Buffer{}
-	traceStderr := &bytes.Buffer{}
-	if trace {
-		c.Stdout = io.MultiWriter(c.Stdout, traceStdout)
-		c.Stderr = io.MultiWriter(c.Stderr, traceStderr)
+		c.Stdout = io.MultiWriter(c.Stdout, config.out)
 	}
 
 	err := c.Run()
 	if err != nil {
-		msg := findErrorMessage(errOut)
-		if msg != "" {
-			err = errors.New(msg)
+		if len(stdOutAndStdErr.Bytes()) > 0 {
+			err = errors.New(stdOutAndStdErr.String())
+			msg := findErrorMessage(stdOutAndStdErr)
+			if msg != "" {
+				err = fmt.Errorf("%s, full output:\n %s", msg, err.Error())
+			}
 		}
 	}
 
 	if trace {
-		if traceCommand := traceGitCommand(args, config, traceStdout.String(), traceStderr.String()); traceCommand != "" {
+		if traceCommand := traceGitCommand(args, config, stdOutAndStdErr.String()); traceCommand != "" {
 			println(traceCommand)
 		}
 	}
@@ -372,14 +433,20 @@ func env() []string {
 	return env
 }
 
-// check returns true if there are changes locally.
-func check(ctx context.Context, workingDir string, subdirs []string) bool {
+// check returns true if there are any local changes.
+func check(ctx context.Context, workingDir string, subdirs []string, checkFullRepo bool) bool {
 	// `--quiet` means "exit with 1 if there are changes"
 	args := []string{"diff", "--quiet"}
-	args = append(args, "--")
-	if len(subdirs) > 0 {
-		args = append(args, subdirs...)
+
+	if checkFullRepo {
+		args = append(args, "HEAD", "--")
+	} else {
+		args = append(args, "--")
+		if len(subdirs) > 0 {
+			args = append(args, subdirs...)
+		}
 	}
+
 	return execGitCmd(ctx, args, gitCmdConfig{dir: workingDir}) != nil
 }
 

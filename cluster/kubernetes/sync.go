@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
@@ -21,9 +22,9 @@ import (
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	rest "k8s.io/client-go/rest"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/rest"
 
-	"github.com/weaveworks/flux"
 	"github.com/weaveworks/flux/cluster"
 	kresource "github.com/weaveworks/flux/cluster/kubernetes/resource"
 	"github.com/weaveworks/flux/policy"
@@ -61,12 +62,14 @@ func (c *Cluster) Sync(syncSet cluster.SyncSet) error {
 
 	cs := makeChangeSet()
 	var errs cluster.SyncError
+	var excluded []string
 	for _, res := range syncSet.Resources {
 		resID := res.ResourceID()
+		id := resID.String()
 		if !c.IsAllowedResource(resID) {
+			excluded = append(excluded, id)
 			continue
 		}
-		id := resID.String()
 		// make a record of the checksum, whether we stage it to
 		// be applied or not, so that we don't delete it later.
 		csum := sha1.Sum(res.Bytes())
@@ -92,6 +95,10 @@ func (c *Cluster) Sync(syncSet cluster.SyncSet) error {
 		}
 	}
 
+	if len(excluded) > 0 {
+		logger.Log("warning", "not applying resources; excluded by namespace constraints", "resources", strings.Join(excluded, ","))
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.muSyncErrors.RLock()
@@ -100,8 +107,8 @@ func (c *Cluster) Sync(syncSet cluster.SyncSet) error {
 	}
 	c.muSyncErrors.RUnlock()
 
-	if c.GC {
-		deleteErrs, gcFailure := c.collectGarbage(syncSet, checksums, logger)
+	if c.GC || c.DryGC {
+		deleteErrs, gcFailure := c.collectGarbage(syncSet, checksums, logger, c.DryGC)
 		if gcFailure != nil {
 			return gcFailure
 		}
@@ -122,7 +129,8 @@ func (c *Cluster) Sync(syncSet cluster.SyncSet) error {
 func (c *Cluster) collectGarbage(
 	syncSet cluster.SyncSet,
 	checksums map[string]string,
-	logger log.Logger) (cluster.SyncError, error) {
+	logger log.Logger,
+	dryRun bool) (cluster.SyncError, error) {
 
 	orphanedResources := makeChangeSet()
 
@@ -137,10 +145,12 @@ func (c *Cluster) collectGarbage(
 
 		switch {
 		case !ok: // was not recorded as having been staged for application
-			c.logger.Log("info", "cluster resource not in resources to be synced; deleting", "resource", resourceID)
-			orphanedResources.stage("delete", res.ResourceID(), "<cluster>", res.IdentifyingBytes())
+			c.logger.Log("info", "cluster resource not in resources to be synced; deleting", "dry-run", dryRun, "resource", resourceID)
+			if !dryRun {
+				orphanedResources.stage("delete", res.ResourceID(), "<cluster>", res.IdentifyingBytes())
+			}
 		case actual != expected:
-			c.logger.Log("warning", "resource to be synced has not been updated; skipping", "resource", resourceID)
+			c.logger.Log("warning", "resource to be synced has not been updated; skipping", "dry-run", dryRun, "resource", resourceID)
 			continue
 		default:
 			// The checksum is the same, indicating that it was
@@ -158,14 +168,14 @@ type kuberesource struct {
 	namespaced bool
 }
 
-// ResourceID returns the ResourceID for this resource loaded from the
+// ResourceID returns the ID for this resource loaded from the
 // cluster.
-func (r *kuberesource) ResourceID() flux.ResourceID {
+func (r *kuberesource) ResourceID() resource.ID {
 	ns, kind, name := r.obj.GetNamespace(), r.obj.GetKind(), r.obj.GetName()
 	if !r.namespaced {
 		ns = kresource.ClusterScope
 	}
-	return flux.MakeResourceID(ns, kind, name)
+	return resource.MakeID(ns, kind, name)
 }
 
 // Bytes returns a byte slice description, including enough info to
@@ -198,9 +208,23 @@ func (c *Cluster) getAllowedResourcesBySelector(selector string) (map[string]*ku
 		listOptions.LabelSelector = selector
 	}
 
-	resources, err := c.client.discoveryClient.ServerResources()
+	_, resources, err := c.client.discoveryClient.ServerGroupsAndResources()
 	if err != nil {
-		return nil, err
+		discErr, ok := err.(*discovery.ErrGroupDiscoveryFailed)
+		if !ok {
+			return nil, err
+		}
+		for gv, e := range discErr.Groups {
+			if gv.Group == "metrics" || strings.HasSuffix(gv.Group, "metrics.k8s.io") {
+				// The Metrics API tends to be misconfigured, causing errors.
+				// We just ignore them, since it doesn't make sense to sync metrics anyways.
+				continue
+			}
+			// Tolerate empty GroupVersions due to e.g. misconfigured custom metrics
+			if e.Error() != fmt.Sprintf("Got empty response for: %v", gv) {
+				return nil, err
+			}
+		}
 	}
 
 	result := map[string]*kuberesource{}
@@ -268,7 +292,7 @@ func (c *Cluster) listAllowedResources(
 	}
 
 	// List resources only from the allowed namespaces
-	namespaces, err := c.getAllowedAndExistingNamespaces()
+	namespaces, err := c.getAllowedAndExistingNamespaces(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +367,7 @@ func makeGCMark(syncSetName, resourceID string) string {
 // --- internal types for keeping track of syncing
 
 type applyObject struct {
-	ResourceID flux.ResourceID
+	ResourceID resource.ID
 	Source     string
 	Payload    []byte
 }
@@ -356,13 +380,13 @@ func makeChangeSet() changeSet {
 	return changeSet{objs: make(map[string][]applyObject)}
 }
 
-func (c *changeSet) stage(cmd string, id flux.ResourceID, source string, bytes []byte) {
+func (c *changeSet) stage(cmd string, id resource.ID, source string, bytes []byte) {
 	c.objs[cmd] = append(c.objs[cmd], applyObject{id, source, bytes})
 }
 
 // Applier is something that will apply a changeset to the cluster.
 type Applier interface {
-	apply(log.Logger, changeSet, map[flux.ResourceID]error) cluster.SyncError
+	apply(log.Logger, changeSet, map[resource.ID]error) cluster.SyncError
 }
 
 type Kubectl struct {
@@ -447,7 +471,7 @@ func (objs applyOrder) Less(i, j int) bool {
 	return ranki < rankj
 }
 
-func (c *Kubectl) apply(logger log.Logger, cs changeSet, errored map[flux.ResourceID]error) (errs cluster.SyncError) {
+func (c *Kubectl) apply(logger log.Logger, cs changeSet, errored map[resource.ID]error) (errs cluster.SyncError) {
 	f := func(objs []applyObject, cmd string, args ...string) {
 		if len(objs) == 0 {
 			return
@@ -525,8 +549,7 @@ func (c *Kubectl) doCommand(logger log.Logger, r io.Reader, args ...string) erro
 func makeMultidoc(objs []applyObject) *bytes.Buffer {
 	buf := &bytes.Buffer{}
 	for _, obj := range objs {
-		buf.WriteString("\n---\n")
-		buf.Write(obj.Payload)
+		appendYAMLToBuffer(obj.Payload, buf)
 	}
 	return buf
 }

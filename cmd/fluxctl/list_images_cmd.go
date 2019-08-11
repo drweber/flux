@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/weaveworks/flux"
 	"github.com/weaveworks/flux/api/v10"
 	"github.com/weaveworks/flux/api/v6"
 	"github.com/weaveworks/flux/registry"
+	"github.com/weaveworks/flux/resource"
 	"github.com/weaveworks/flux/update"
 )
 
@@ -36,13 +36,13 @@ func (opts *imageListOpts) Command() *cobra.Command {
 		Example: makeExample("fluxctl list-images --namespace default --workload=deployment/foo"),
 		RunE:    opts.RunE,
 	}
-	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "Namespace")
+	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", getKubeConfigContextNamespace(""), "Namespace")
 	cmd.Flags().StringVarP(&opts.workload, "workload", "w", "", "Show images for this workload")
 	cmd.Flags().IntVarP(&opts.limit, "limit", "l", 10, "Number of images to show (0 for all)")
 
 	// Deprecated
 	cmd.Flags().StringVarP(&opts.controller, "controller", "c", "", "Show images for this controller")
-	cmd.Flags().MarkDeprecated("controller", "changed to --workspace, use that instead")
+	cmd.Flags().MarkDeprecated("controller", "changed to --workload, use that instead")
 
 	return cmd
 }
@@ -64,7 +64,7 @@ func (opts *imageListOpts) RunE(cmd *cobra.Command, args []string) error {
 		opts.workload = opts.controller
 	}
 	if len(opts.workload) > 0 {
-		id, err := flux.ParseResourceIDOptionalNamespace(opts.namespace, opts.workload)
+		id, err := resource.ParseIDOptionalNamespace(opts.namespace, opts.workload)
 		if err != nil {
 			return err
 		}
@@ -130,11 +130,19 @@ func (opts *imageListOpts) RunE(cmd *cobra.Command, args []string) error {
 				}
 				if printLine {
 					createdAt := ""
-					if !available.CreatedAt.IsZero() {
-						createdAt = available.CreatedAt.Format(time.RFC822)
+					if !available.CreatedTS().IsZero() {
+						createdAt = available.CreatedTS().Format(time.RFC822)
 					}
 					fmt.Fprintf(out, "\t\t%s %s\t%s\n", running, tag, createdAt)
 				}
+			}
+			if !foundRunning {
+				running := "'->"
+				if currentTag == "" {
+					currentTag = "(untagged)"
+				}
+				fmt.Fprintf(out, "\t\t%s %s\t%s\n", running, currentTag, "?")
+
 			}
 			workloadName = ""
 		}

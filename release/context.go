@@ -1,34 +1,29 @@
 package release
 
 import (
+	"context"
 	"fmt"
-	"io/ioutil"
-	"os"
-	"path/filepath"
 
 	"github.com/pkg/errors"
 
-	"github.com/weaveworks/flux"
 	"github.com/weaveworks/flux/cluster"
-	"github.com/weaveworks/flux/git"
+	"github.com/weaveworks/flux/manifests"
 	"github.com/weaveworks/flux/registry"
 	"github.com/weaveworks/flux/resource"
 	"github.com/weaveworks/flux/update"
 )
 
 type ReleaseContext struct {
-	cluster   cluster.Cluster
-	manifests cluster.Manifests
-	repo      *git.Checkout
-	registry  registry.Registry
+	cluster       cluster.Cluster
+	resourceStore manifests.Store
+	registry      registry.Registry
 }
 
-func NewReleaseContext(c cluster.Cluster, m cluster.Manifests, reg registry.Registry, repo *git.Checkout) *ReleaseContext {
+func NewReleaseContext(cluster cluster.Cluster, resourceStore manifests.Store, registry registry.Registry) *ReleaseContext {
 	return &ReleaseContext{
-		cluster:   c,
-		manifests: m,
-		repo:      repo,
-		registry:  reg,
+		cluster:       cluster,
+		resourceStore: resourceStore,
+		registry:      registry,
 	}
 }
 
@@ -36,25 +31,18 @@ func (rc *ReleaseContext) Registry() registry.Registry {
 	return rc.registry
 }
 
-func (rc *ReleaseContext) LoadManifests() (map[string]resource.Resource, error) {
-	return rc.manifests.LoadManifests(rc.repo.Dir(), rc.repo.ManifestDirs())
+func (rc *ReleaseContext) GetAllResources(ctx context.Context) (map[string]resource.Resource, error) {
+	return rc.resourceStore.GetAllResourcesByID(ctx)
 }
 
-func (rc *ReleaseContext) WriteUpdates(updates []*update.WorkloadUpdate) error {
+func (rc *ReleaseContext) WriteUpdates(ctx context.Context, updates []*update.WorkloadUpdate) error {
 	err := func() error {
 		for _, update := range updates {
-			manifestBytes, err := ioutil.ReadFile(update.ManifestPath)
-			if err != nil {
-				return err
-			}
 			for _, container := range update.Updates {
-				manifestBytes, err = rc.manifests.UpdateImage(manifestBytes, update.ResourceID, container.Container, container.Target)
+				err := rc.resourceStore.SetWorkloadContainerImage(ctx, update.ResourceID, container.Container, container.Target)
 				if err != nil {
 					return errors.Wrapf(err, "updating resource %s in %s", update.ResourceID.String(), update.Resource.Source())
 				}
-			}
-			if err = ioutil.WriteFile(update.ManifestPath, manifestBytes, os.FileMode(0600)); err != nil {
-				return errors.Wrapf(err, "writing updated file %s", update.Resource.Source())
 			}
 		}
 		return nil
@@ -68,17 +56,18 @@ func (rc *ReleaseContext) WriteUpdates(updates []*update.WorkloadUpdate) error {
 // files and the running cluster. `WorkloadFilter`s can be provided
 // to filter the controllers so found, either before (`prefilters`) or
 // after (`postfilters`) consulting the cluster.
-func (rc *ReleaseContext) SelectWorkloads(results update.Result, prefilters, postfilters []update.WorkloadFilter) ([]*update.WorkloadUpdate, error) {
+func (rc *ReleaseContext) SelectWorkloads(ctx context.Context, results update.Result, prefilters,
+	postfilters []update.WorkloadFilter) ([]*update.WorkloadUpdate, error) {
 
 	// Start with all the workloads that are defined in the repo.
-	allDefined, err := rc.WorkloadsForUpdate()
+	allDefined, err := rc.WorkloadsForUpdate(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// Apply prefilters to select the controllers that we'll ask the
 	// cluster about.
-	var toAskClusterAbout []flux.ResourceID
+	var toAskClusterAbout []resource.ID
 	for _, s := range allDefined {
 		res := s.Filter(prefilters...)
 		if res.Error == "" {
@@ -95,7 +84,7 @@ func (rc *ReleaseContext) SelectWorkloads(results update.Result, prefilters, pos
 	}
 
 	// Ask the cluster about those that we're still interested in
-	definedAndRunning, err := rc.cluster.SomeWorkloads(toAskClusterAbout)
+	definedAndRunning, err := rc.cluster.SomeWorkloads(ctx, toAskClusterAbout)
 	if err != nil {
 		return nil, err
 	}
@@ -106,9 +95,9 @@ func (rc *ReleaseContext) SelectWorkloads(results update.Result, prefilters, pos
 		update, ok := allDefined[s.ID]
 		if !ok {
 			// A contradiction: we asked only about defined
-			// controllers, and got a controller that is not
+			// workloads, and got a workload that is not
 			// defined.
-			return nil, fmt.Errorf("controller %s was requested and is running, but is not defined", s.ID)
+			return nil, fmt.Errorf("workload %s was requested and is running, but is not defined", s.ID)
 		}
 		update.Workload = s
 		forPostFiltering = append(forPostFiltering, update)
@@ -127,20 +116,19 @@ func (rc *ReleaseContext) SelectWorkloads(results update.Result, prefilters, pos
 }
 
 // WorkloadsForUpdate collects all workloads defined in manifests and prepares a list of
-// controller updates for each of them.  It does not consider updatability.
-func (rc *ReleaseContext) WorkloadsForUpdate() (map[flux.ResourceID]*update.WorkloadUpdate, error) {
-	resources, err := rc.LoadManifests()
+// workload updates for each of them.  It does not consider updatability.
+func (rc *ReleaseContext) WorkloadsForUpdate(ctx context.Context) (map[resource.ID]*update.WorkloadUpdate, error) {
+	resources, err := rc.GetAllResources(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var defined = map[flux.ResourceID]*update.WorkloadUpdate{}
+	var defined = map[resource.ID]*update.WorkloadUpdate{}
 	for _, res := range resources {
 		if wl, ok := res.(resource.Workload); ok {
 			defined[res.ResourceID()] = &update.WorkloadUpdate{
-				ResourceID:   res.ResourceID(),
-				Resource:     wl,
-				ManifestPath: filepath.Join(rc.repo.Dir(), res.Source()),
+				ResourceID: res.ResourceID(),
+				Resource:   wl,
 			}
 		}
 	}

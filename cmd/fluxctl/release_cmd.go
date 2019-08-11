@@ -8,11 +8,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/weaveworks/flux"
 	"github.com/weaveworks/flux/api/v11"
 	"github.com/weaveworks/flux/api/v6"
 	"github.com/weaveworks/flux/cluster"
 	"github.com/weaveworks/flux/job"
+	"github.com/weaveworks/flux/resource"
 	"github.com/weaveworks/flux/update"
 )
 
@@ -42,7 +42,7 @@ func newWorkloadRelease(parent *rootOpts) *workloadReleaseOpts {
 func (opts *workloadReleaseOpts) Command() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "release",
-		Short: "Release a new version of a controller.",
+		Short: "Release a new version of a workload.",
 		Example: makeExample(
 			"fluxctl release -n default --workload=deployment/foo --update-image=library/hello:v2",
 			"fluxctl release --all --update-image=library/hello:v2",
@@ -53,13 +53,13 @@ func (opts *workloadReleaseOpts) Command() *cobra.Command {
 
 	AddOutputFlags(cmd, &opts.outputOpts)
 	AddCauseFlags(cmd, &opts.cause)
-	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Workload namespace")
+	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", getKubeConfigContextNamespace("default"), "Workload namespace")
 	// Note: we cannot define a shorthand for --workload since it clashes with the shorthand of --watch
 	cmd.Flags().StringSliceVarP(&opts.workloads, "workload", "", []string{}, "List of workloads to release <namespace>:<kind>/<name>")
-	cmd.Flags().BoolVar(&opts.allWorkloads, "all", false, "Release all controllers")
+	cmd.Flags().BoolVar(&opts.allWorkloads, "all", false, "Release all workloads")
 	cmd.Flags().StringVarP(&opts.image, "update-image", "i", "", "Update a specific image")
 	cmd.Flags().BoolVar(&opts.allImages, "update-all-images", false, "Update all images to latest versions")
-	cmd.Flags().StringSliceVar(&opts.exclude, "exclude", []string{}, "List of controllers to exclude")
+	cmd.Flags().StringSliceVar(&opts.exclude, "exclude", []string{}, "List of workloads to exclude")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not release anything; just report back what would have been done")
 	cmd.Flags().BoolVar(&opts.interactive, "interactive", false, "Select interactively which containers to update")
 	cmd.Flags().BoolVarP(&opts.force, "force", "f", false, "Disregard locks and container image filters (has no effect when used with --all or --update-all-images)")
@@ -67,7 +67,7 @@ func (opts *workloadReleaseOpts) Command() *cobra.Command {
 
 	// Deprecated
 	cmd.Flags().StringSliceVarP(&opts.controllers, "controller", "c", []string{}, "List of controllers to release <namespace>:<kind>/<name>")
-	cmd.Flags().MarkDeprecated("controller", "changed to --workspace, use that instead")
+	cmd.Flags().MarkDeprecated("controller", "changed to --workload, use that instead")
 
 	return cmd
 }
@@ -103,7 +103,7 @@ func (opts *workloadReleaseOpts) RunE(cmd *cobra.Command, args []string) error {
 		workloads = []update.ResourceSpec{update.ResourceSpecAll}
 	} else {
 		for _, workload := range opts.workloads {
-			id, err := flux.ParseResourceIDOptionalNamespace(opts.namespace, workload)
+			id, err := resource.ParseIDOptionalNamespace(opts.namespace, workload)
 			if err != nil {
 				return err
 			}
@@ -130,9 +130,9 @@ func (opts *workloadReleaseOpts) RunE(cmd *cobra.Command, args []string) error {
 		kind = update.ReleaseKindPlan
 	}
 
-	var excludes []flux.ResourceID
+	var excludes []resource.ID
 	for _, exclude := range opts.exclude {
-		s, err := flux.ParseResourceIDOptionalNamespace(opts.namespace, exclude)
+		s, err := resource.ParseIDOptionalNamespace(opts.namespace, exclude)
 		if err != nil {
 			return err
 		}

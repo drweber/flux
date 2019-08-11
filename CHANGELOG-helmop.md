@@ -1,3 +1,202 @@
+## 0.10.1 (2019-08-07)
+
+> **Notice:** this release contains a `HelmRelease`
+> [Custom Resource Definition][helm 0.10.1 crd] fix. Please make sure
+> you patch the CRD in your cluster.
+
+### Bug fixes
+
+ - Fixed `rollback.timeout` definition in the `CustomResourceDefinition`
+   [weaveworks/flux#2251][#2251]
+ - Fixed the merge of values
+   [weaveworks/flux#2292][#2292]
+ - Correct spelling of integrations, and fix `make check-generated`
+   [weaveworks/flux#2312][#2312]
+ - Moved successful chart fetch signal to reconcile action (to prevent
+   an infinite loop due to the `LastUpdateTime` on the condition getting
+   accidentally updated during rollback checks).
+   [weaveworks/flux#2316][#2316]
+ - Fixed typo in `ReasonUpgradeFailed` condition change reason
+   [weaveworks/flux#2317][#2317]
+
+### Thanks
+
+This release was made possible by contributions from @jfrndz, @adrian,
+@stefanprodan, @obiesmans, @chriscorn-takt, @sureshamk, @dholbach,
+@squaremo, and @hiddeco.
+
+[#2251]: https://github.com/fluxcd/flux/pull/2251
+[#2292]: https://github.com/fluxcd/flux/pull/2292
+[#2312]: https://github.com/fluxcd/flux/pull/2312
+[#2316]: https://github.com/fluxcd/flux/pull/2316
+[#2317]: https://github.com/fluxcd/flux/pull/2317
+[helm 0.10.1 crd]: https://github.com/weaveworks/flux/blob/release/helm-0.10.x/deploy-helm/flux-helm-release-crd.yaml
+
+## 0.10.0 (2019-07-10)
+
+This release brings you [opt-in automated rollback support][rollback docs],
+new Prometheus metrics, and _experimental_ support of spawning
+multiple workers with the `--workers=<num>` flag to speed up the
+processing of releases.
+
+This will likely also be the last _minor_ beta release before we
+promote the Helm operator to its first GA `1.0.0` release.
+
+> **Notice:** the Helm operator relies on changes in the `HelmRelease`
+> [Custom Resource Definition][helm 0.10.0 crd]. Please make sure you patch the
+> CRD in your cluster _before_ upgrading the Helm operator.
+
+### Bug fixes
+
+ - Prevent an infinite release loop when multiple `HelmRelease`
+   resources with the same release name configuration coexist,
+   by looking at the antecedent annotation set on release resources
+   and confirming ownership
+   [weaveworks/flux#2123][#2123]
+
+### Improvements
+
+ - Opt-in automated rollback support; when enabled, a failed release
+   will be rolled back automatically and the operator will not attempt
+   a new release until it detects a change in the chart and/or the
+   configured values
+   [weaveworks/flux#2006][#2006]
+ - Increase timeout for annotating resources from a Helm release, to
+   cope with large umbrella charts
+   [weaveworks/flux#2123][#2123]
+ - New Prometheus metrics
+
+   + `release_queue_length_count`
+   + `release_duration_seconds{action=['INSTALL','UPGRADE'], dry-run=['true', 'false'], success=['true','false'], namespace, releasename}`
+   
+   [weaveworks/flux#2191][#2191]
+ - Experimental support of spawning multiple queue workers processing
+   releases by configuring the `--workers=<num>` flag
+   [weaveworks/flux#2194][#2194]
+
+### Maintenance and documentation
+
+ - Publish images to [fluxcd DockerHub][] organization
+   [weaveworks/flux#2213][#2213]
+ - Document opt-in rollback feature
+   [weaveworks/flux#2220][#2220]
+
+### Thanks
+
+Many thanks to @adrian, @2opremio, @semyonslepov, @gtseres, @squaremo, @stefanprodan, @kingdonb, @ncabatoff,
+@dholbach, @cristian-radu, @simonmacklin, @hiddeco for contributing to this release.
+
+[#2006]: https://github.com/weaveworks/flux/pull/2006
+[#2123]: https://github.com/weaveworks/flux/pull/2123
+[#2191]: https://github.com/weaveworks/flux/pull/2191
+[#2194]: https://github.com/weaveworks/flux/pull/2194
+[#2213]: https://github.com/weaveworks/flux/pull/2213
+[#2220]: https://github.com/weaveworks/flux/pull/2220
+[helm 0.10.0 crd]: https://github.com/weaveworks/flux/blob/release/helm-0.10.x/deploy-helm/flux-helm-release-crd.yaml
+[rollback docs]: https://github.com/weaveworks/flux/blob/release/helm-0.10.x/site/helm-integration.md#rollbacks
+[fluxcd DockerHub]: https://hub.docker.com/r/weaveworks/helm-operator/
+
+## 0.9.2 (2019-06-13)
+
+### Bug fixes
+
+ - Ensure releases are enqueued on clone change only
+   [weaveworks/flux#2081][#2081]
+ - Reorder start of processes on boot and verify informer cache sync
+   early, to prevent the operator from hanging on boot
+   [weaveworks/flux#2103][#2103]
+ - Use openssh-client rather than openssh in container image
+   [weaveworks/flux#2142][#2142]
+
+### Improvements
+
+ - Enable pprof to ease profiling
+   [weaveworks/flux#2095][#2095]
+
+### Maintenance and documentation
+
+ - Add notes about production setup Tiller
+   [weaveworks/flux#2146][#2146]
+   
+### Thanks
+
+Thanks @2opremio, @willholley ,@runningman84, @stefanprodan, @squaremo,
+@rossf7, @hiddeco for contributing.
+
+[#2081]: https://github.com/weaveworks/flux/pull/2081
+[#2095]: https://github.com/weaveworks/flux/pull/2095
+[#2103]: https://github.com/weaveworks/flux/pull/2103
+[#2142]: https://github.com/weaveworks/flux/pull/2142
+[#2146]: https://github.com/weaveworks/flux/pull/2146
+
+## 0.9.1 (2019-05-09)
+
+### Bug fixes
+
+ - During the lookup of `HelmRelease`s for a mirror, ensure the
+   resource has a git chart source before comparing the mirror name
+   [weaveworks/flux#2027][#2027]
+
+### Thanks
+
+Thanks to @puzza007, @squaremo, @2opremio, @stefanprodan, @hiddeco
+for reporting the issue, patching and reviewing it.
+
+[#2027]: https://github.com/weaveworks/flux/pull/2027
+
+## 0.9.0 (2019-05-08)
+
+### Bug fixes
+
+ - Make sure client-go logs to stderr
+   [weaveworks/flux#1945][#1945]
+ - Prevent garbage collected `HelmRelease`s from getting upgraded
+   [weaveworks/flux#1906][#1906]
+
+### Improvements
+
+ - Enqueue release update on git chart source changes and improve
+   mirror change calculations
+   [weaveworks/flux#1906][#1906], [weaveworks/flux#2005][#2005]
+ - The operator now checks if the `HelmRelease` spec has changed after
+   it performed a dry-run, this prevents scenarios where it could
+   enroll an older revision of a `HelmRelease` while a newer version
+   was already known
+   [weaveworks/flux#1906][#1906]
+ - Stop logging broadcasted Kubernetes events
+   [weaveworks/flux#1906][#1906]
+ - Log and return early if release is not upgradable
+   [weaveworks/flux#2008][#2008]
+
+### Maintenance and documentation
+
+ - Update client-go to `v1.11`
+   [weaveworks/flux#1929][#1929]
+ - Move images to DockerHub and have a separate pre-releases image repo
+   [weaveworks/flux#1949][#1949], [weaveworks/flux#1956][#1956]
+ - Support `arm` and `arm64` builds
+   [weaveworks/flux#1950][#1950]
+ - Retry keyscan when building images, to mitigate for occasional
+   timeouts
+   [weaveworks/flux#1971][#1971]
+
+### Thanks
+
+Thanks @brezerk, @jpds, @stefanprodan, @2opremio, @hiddeco, @squaremo,
+@dholbach, @bboreham, @bricef and @stevenpall for their contributions
+to this release, and anyone who I have missed during this manual
+labour.
+
+[#1906]: https://github.com/weaveworks/flux/pull/1906
+[#1929]: https://github.com/weaveworks/flux/pull/1929
+[#1945]: https://github.com/weaveworks/flux/pull/1945
+[#1949]: https://github.com/weaveworks/flux/pull/1949
+[#1950]: https://github.com/weaveworks/flux/pull/1950
+[#1956]: https://github.com/weaveworks/flux/pull/1956
+[#1971]: https://github.com/weaveworks/flux/pull/1971
+[#2005]: https://github.com/weaveworks/flux/pull/2005
+[#2008]: https://github.com/weaveworks/flux/pull/2008
+
 ## 0.8.0 (2019-04-11)
 
 This release bumps the Helm API package and binary to `v2.13.0`;
@@ -26,17 +225,17 @@ recommend running Tiller `>=2.13.0` from now on.
  - Use Helm operator image from build in e2e tests
    [weaveworks/flux#1910][#1910]
 
-[#1828]: https://github.com/weaveworks/flux/pull/1828
-[#1865]: https://github.com/weaveworks/flux/pull/1865
-[#1908]: https://github.com/weaveworks/flux/pull/1908
-[#1909]: https://github.com/weaveworks/flux/pull/1909
-[#1910]: https://github.com/weaveworks/flux/pull/1910
-
 ### Thanks
 
 Thanks to @hpurmann, @2opremio, @arturo-c, @squaremo, @stefanprodan,
 @hiddeco, and others for their contributions to this release, feedback,
 and bringing us one step closer to a GA-release.
+
+[#1828]: https://github.com/weaveworks/flux/pull/1828
+[#1865]: https://github.com/weaveworks/flux/pull/1865
+[#1908]: https://github.com/weaveworks/flux/pull/1908
+[#1909]: https://github.com/weaveworks/flux/pull/1909
+[#1910]: https://github.com/weaveworks/flux/pull/1910
 
 ## 0.7.1 (2019-03-27)
 

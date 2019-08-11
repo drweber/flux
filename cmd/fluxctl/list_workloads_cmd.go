@@ -30,7 +30,7 @@ func (opts *workloadListOpts) Command() *cobra.Command {
 		Example: makeExample("fluxctl list-workloads"),
 		RunE:    opts.RunE,
 	}
-	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Confine query to namespace")
+	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", getKubeConfigContextNamespace("default"), "Confine query to namespace")
 	cmd.Flags().BoolVarP(&opts.allNamespaces, "all-namespaces", "a", false, "Query across all namespaces")
 	return cmd
 }
@@ -63,7 +63,7 @@ func (opts *workloadListOpts) RunE(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(w, "\t%s\t%s\t\t\n", c.Name, c.Current.ID)
 			}
 		} else {
-			fmt.Fprintf(w, "%s\t\t\t\t\n", workload.ID)
+			fmt.Fprintf(w, "%s\t\t\t%s\t%s\n", workload.ID, workload.Status, policies(workload))
 		}
 	}
 	w.Flush()

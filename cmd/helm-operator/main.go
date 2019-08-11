@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,7 +11,10 @@ import (
 	"github.com/go-kit/kit/log"
 	"github.com/spf13/pflag"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog"
 
 	"github.com/weaveworks/flux/checkpoint"
 	clientset "github.com/weaveworks/flux/integrations/client/clientset/versioned"
@@ -31,9 +33,13 @@ var (
 
 	versionFlag *bool
 
+	logFormat *string
+
 	kubeconfig *string
 	master     *string
 	namespace  *string
+
+	workers *int
 
 	tillerIP        *string
 	tillerPort      *string
@@ -76,9 +82,13 @@ func init() {
 
 	versionFlag = fs.Bool("version", false, "print version and exit")
 
+	logFormat = fs.String("log-format", "fmt", "change the log format.")
+
 	kubeconfig = fs.String("kubeconfig", "", "path to a kubeconfig; required if out-of-cluster")
 	master = fs.String("master", "", "address of the Kubernetes API server; overrides any value in kubeconfig; required if out-of-cluster")
 	namespace = fs.String("allow-namespace", "", "if set, this limits the scope to a single namespace; if not specified, all namespaces will be watched")
+
+	workers = fs.Int("workers", 1, "amount of workers processing releases (experimental)")
 
 	listenAddr = fs.StringP("listen", "l", ":3030", "Listen address where /metrics and API will be served")
 
@@ -102,8 +112,9 @@ func init() {
 }
 
 func main() {
-	// set glog output to stderr
-	flag.CommandLine.Parse([]string{"-logtostderr"})
+	// Explicitly initialize klog to enable stderr logging,
+	// and parse our own flags.
+	klog.InitFlags(nil)
 	fs.Parse(os.Args)
 
 	if *versionFlag {
@@ -113,7 +124,14 @@ func main() {
 
 	// init go-kit log
 	{
-		logger = log.NewLogfmtLogger(os.Stderr)
+		switch *logFormat {
+		case "json":
+			logger = log.NewJSONLogger(log.NewSyncWriter(os.Stderr))
+		case "fmt":
+			logger = log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
+		default:
+			logger = log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
+		}
 		logger = log.With(logger, "ts", log.DefaultTimestampUTC)
 		logger = log.With(logger, "caller", log.DefaultCaller)
 	}
@@ -136,19 +154,19 @@ func main() {
 
 	cfg, err := clientcmd.BuildConfigFromFlags(*master, *kubeconfig)
 	if err != nil {
-		mainLogger.Log("error", fmt.Sprintf("Error building kubeconfig: %v", err))
+		mainLogger.Log("error", fmt.Sprintf("error building kubeconfig: %v", err))
 		os.Exit(1)
 	}
 
 	kubeClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		mainLogger.Log("error", fmt.Sprintf("Error building kubernetes clientset: %v", err))
+		mainLogger.Log("error", fmt.Sprintf("error building kubernetes clientset: %v", err))
 		os.Exit(1)
 	}
 
 	ifClient, err := clientset.NewForConfig(cfg)
 	if err != nil {
-		mainLogger.Log("error", fmt.Sprintf("Error building integrations clientset: %v", err))
+		mainLogger.Log("error", fmt.Sprintf("error building integrations clientset: %v", err))
 		os.Exit(1)
 	}
 
@@ -164,43 +182,56 @@ func main() {
 		TLSHostname: *tillerTLSHostname,
 	})
 
-	// The status updater, to keep track the release status for each
-	// HelmRelease. It runs as a separate loop for now.
-	statusUpdater := status.New(ifClient, kubeClient, helmClient, *namespace)
-	go statusUpdater.Loop(shutdown, log.With(logger, "component", "annotator"))
+	// setup shared informer for HelmReleases
+	nsOpt := ifinformers.WithNamespace(*namespace)
+	ifInformerFactory := ifinformers.NewSharedInformerFactoryWithOptions(ifClient, *chartsSyncInterval, nsOpt)
+	fhrInformer := ifInformerFactory.Flux().V1beta1().HelmReleases()
 
-	// release instance is needed during the sync of Charts changes and during the sync of HelmRelease changes
+	// setup workqueue for HelmReleases
+	queue := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "ChartRelease")
+
+	// release instance is needed during the sync of git chart changes
+	// and during the sync of HelmRelease changes
 	rel := release.New(log.With(logger, "component", "release"), helmClient)
 	chartSync := chartsync.New(
 		log.With(logger, "component", "chartsync"),
-		chartsync.Polling{Interval: *chartsSyncInterval},
-		chartsync.Clients{KubeClient: *kubeClient, IfClient: *ifClient},
+		chartsync.Clients{KubeClient: *kubeClient, IfClient: *ifClient, FhrLister: fhrInformer.Lister()},
 		rel,
+		queue,
 		chartsync.Config{LogDiffs: *logReleaseDiffs, UpdateDeps: *updateDependencies, GitTimeout: *gitTimeout, GitPollInterval: *gitPollInterval},
 		*namespace,
-		statusUpdater,
 	)
-	chartSync.Run(shutdown, errc, shutdownWg)
 
-	nsOpt := ifinformers.WithNamespace(*namespace)
-	ifInformerFactory := ifinformers.NewSharedInformerFactoryWithOptions(ifClient, 30*time.Second, nsOpt)
-	fhrInformer := ifInformerFactory.Flux().V1beta1().HelmReleases()
-
-	// start FluxRelease informer
-	opr := operator.New(log.With(logger, "component", "operator"), *logReleaseDiffs, kubeClient, fhrInformer, chartSync)
+	// prepare operator and start FluxRelease informer
+	// NB: the operator needs to do its magic with the informer
+	// _before_ starting it or else the cache sync seems to hang at
+	// random
+	opr := operator.New(log.With(logger, "component", "operator"), *logReleaseDiffs, kubeClient, fhrInformer, queue, chartSync)
 	go ifInformerFactory.Start(shutdown)
 
-	checkpoint.CheckForUpdates(product, version, nil, log.With(logger, "component", "checkpoint"))
+	// wait for the caches to be synced before starting _any_ workers
+	mainLogger.Log("info", "waiting for informer caches to sync")
+	if ok := cache.WaitForCacheSync(shutdown, fhrInformer.Informer().HasSynced); !ok {
+		mainLogger.Log("error", "failed to wait for caches to sync")
+		os.Exit(1)
+	}
+	mainLogger.Log("info", "informer caches synced")
+
+	// start operator
+	go opr.Run(*workers, shutdown, shutdownWg)
+
+	// start git sync loop
+	go chartSync.Run(shutdown, errc, shutdownWg)
+
+	// the status updater, to keep track of the release status for
+	// every HelmRelease
+	statusUpdater := status.New(ifClient, fhrInformer.Lister(), helmClient)
+	go statusUpdater.Loop(shutdown, log.With(logger, "component", "statusupdater"))
 
 	// start HTTP server
 	go daemonhttp.ListenAndServe(*listenAddr, chartSync, log.With(logger, "component", "daemonhttp"), shutdown)
 
-	// start operator
-	go func() {
-		if err = opr.Run(1, shutdown, shutdownWg); err != nil {
-			errc <- fmt.Errorf(ErrOperatorFailure, err)
-		}
-	}()
+	checkpoint.CheckForUpdates(product, version, nil, log.With(logger, "component", "checkpoint"))
 
 	shutdownErr := <-errc
 	logger.Log("exiting...", shutdownErr)

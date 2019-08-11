@@ -2,10 +2,11 @@ package update
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
 	"github.com/go-kit/kit/log"
-	"github.com/weaveworks/flux"
+
 	"github.com/weaveworks/flux/image"
 	"github.com/weaveworks/flux/resource"
 )
@@ -15,16 +16,16 @@ type Automated struct {
 }
 
 type Change struct {
-	WorkloadID flux.ResourceID
+	WorkloadID resource.ID
 	Container  resource.Container
 	ImageID    image.Ref
 }
 
-func (a *Automated) Add(service flux.ResourceID, container resource.Container, image image.Ref) {
+func (a *Automated) Add(service resource.ID, container resource.Container, image image.Ref) {
 	a.Changes = append(a.Changes, Change{service, container, image})
 }
 
-func (a *Automated) CalculateRelease(rc ReleaseContext, logger log.Logger) ([]*WorkloadUpdate, Result, error) {
+func (a *Automated) CalculateRelease(ctx context.Context, rc ReleaseContext, logger log.Logger) ([]*WorkloadUpdate, Result, error) {
 	prefilters := []WorkloadFilter{
 		&IncludeFilter{a.workloadIDs()},
 	}
@@ -34,7 +35,7 @@ func (a *Automated) CalculateRelease(rc ReleaseContext, logger log.Logger) ([]*W
 	}
 
 	result := Result{}
-	updates, err := rc.SelectWorkloads(result, prefilters, postfilters)
+	updates, err := rc.SelectWorkloads(ctx, result, prefilters, postfilters)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -138,18 +139,18 @@ func (a *Automated) calculateImageUpdates(rc ReleaseContext, candidates []*Workl
 }
 
 // workloadMap transposes the changes so they can be looked up by ID
-func (a *Automated) workloadMap() map[flux.ResourceID][]Change {
-	set := map[flux.ResourceID][]Change{}
+func (a *Automated) workloadMap() map[resource.ID][]Change {
+	set := map[resource.ID][]Change{}
 	for _, change := range a.Changes {
 		set[change.WorkloadID] = append(set[change.WorkloadID], change)
 	}
 	return set
 }
 
-func (a *Automated) workloadIDs() []flux.ResourceID {
-	slice := []flux.ResourceID{}
+func (a *Automated) workloadIDs() []resource.ID {
+	slice := []resource.ID{}
 	for workload, _ := range a.workloadMap() {
-		slice = append(slice, flux.MustParseResourceID(workload.String()))
+		slice = append(slice, resource.MustParseID(workload.String()))
 	}
 	return slice
 }

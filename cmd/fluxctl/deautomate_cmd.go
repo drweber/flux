@@ -32,12 +32,12 @@ func (opts *workloadDeautomateOpts) Command() *cobra.Command {
 	}
 	AddOutputFlags(cmd, &opts.outputOpts)
 	AddCauseFlags(cmd, &opts.cause)
-	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Workload namespace")
+	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", getKubeConfigContextNamespace("default"), "Workload namespace")
 	cmd.Flags().StringVarP(&opts.workload, "workload", "w", "", "Workload to deautomate")
 
 	// Deprecated
 	cmd.Flags().StringVarP(&opts.controller, "controller", "c", "", "Controller to deautomate")
-	cmd.Flags().MarkDeprecated("controller", "changed to --workspace, use that instead")
+	cmd.Flags().MarkDeprecated("controller", "changed to --workload, use that instead")
 
 	return cmd
 }

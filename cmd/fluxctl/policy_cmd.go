@@ -6,8 +6,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/weaveworks/flux"
+
 	"github.com/weaveworks/flux/policy"
+	"github.com/weaveworks/flux/resource"
 	"github.com/weaveworks/flux/update"
 )
 
@@ -59,7 +60,7 @@ containers which aren't explicitly named.
 	AddOutputFlags(cmd, &opts.outputOpts)
 	AddCauseFlags(cmd, &opts.cause)
 	flags := cmd.Flags()
-	flags.StringVarP(&opts.namespace, "namespace", "n", "default", "Workload namespace")
+	flags.StringVarP(&opts.namespace, "namespace", "n", getKubeConfigContextNamespace("default"), "Workload namespace")
 	flags.StringVarP(&opts.workload, "workload", "w", "", "Workload to modify")
 	flags.StringVar(&opts.tagAll, "tag-all", "", "Tag filter pattern to apply to all containers")
 	flags.StringSliceVar(&opts.tags, "tag", nil, "Tag filter container/pattern pairs")
@@ -70,7 +71,7 @@ containers which aren't explicitly named.
 
 	// Deprecated
 	flags.StringVarP(&opts.controller, "controller", "c", "", "Controller to modify")
-	flags.MarkDeprecated("controller", "changed to --workspace, use that instead")
+	flags.MarkDeprecated("controller", "changed to --workload, use that instead")
 
 	return cmd
 }
@@ -97,7 +98,7 @@ func (opts *workloadPolicyOpts) RunE(cmd *cobra.Command, args []string) error {
 		return newUsageError("lock and unlock both specified")
 	}
 
-	resourceID, err := flux.ParseResourceIDOptionalNamespace(opts.namespace, opts.workload)
+	resourceID, err := resource.ParseIDOptionalNamespace(opts.namespace, opts.workload)
 	if err != nil {
 		return err
 	}
@@ -108,7 +109,7 @@ func (opts *workloadPolicyOpts) RunE(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx := context.Background()
-	updates := policy.Updates{
+	updates := resource.PolicyUpdates{
 		resourceID: changes,
 	}
 	jobID, err := opts.API.UpdateManifests(ctx, update.Spec{
@@ -122,7 +123,7 @@ func (opts *workloadPolicyOpts) RunE(cmd *cobra.Command, args []string) error {
 	return await(ctx, cmd.OutOrStdout(), cmd.OutOrStderr(), opts.API, jobID, false, opts.verbosity)
 }
 
-func calculatePolicyChanges(opts *workloadPolicyOpts) (policy.Update, error) {
+func calculatePolicyChanges(opts *workloadPolicyOpts) (resource.PolicyUpdate, error) {
 	add := policy.Set{}
 	if opts.automate {
 		add = add.Add(policy.Automated)
@@ -153,7 +154,7 @@ func calculatePolicyChanges(opts *workloadPolicyOpts) (policy.Update, error) {
 	for _, tagPair := range opts.tags {
 		parts := strings.Split(tagPair, "=")
 		if len(parts) != 2 {
-			return policy.Update{}, fmt.Errorf("invalid container/tag pair: %q. Expected format is 'container=filter'", tagPair)
+			return resource.PolicyUpdate{}, fmt.Errorf("invalid container/tag pair: %q. Expected format is 'container=filter'", tagPair)
 		}
 
 		container, tag := parts[0], parts[1]
@@ -164,7 +165,7 @@ func calculatePolicyChanges(opts *workloadPolicyOpts) (policy.Update, error) {
 		}
 	}
 
-	return policy.Update{
+	return resource.PolicyUpdate{
 		Add:    add,
 		Remove: remove,
 	}, nil

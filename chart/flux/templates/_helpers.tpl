@@ -43,6 +43,17 @@ Create the name of the service account to use
 {{- end -}}
 
 {{/*
+Create the name of the cluster role to use
+*/}}
+{{- define "flux.clusterRoleName" -}}
+{{- if .Values.clusterRole.create -}}
+    {{ default (include "flux.fullname" .) .Values.clusterRole.name }}
+{{- else -}}
+    {{ default "default" .Values.clusterRole.name }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Create a custom repositories.yaml for Helm
 */}}
 {{- define "flux.customRepositories" -}}
@@ -60,3 +71,16 @@ repositories:
   username: "{{ .username | default "" }}"
 {{- end }}
 {{- end -}}
+
+{{/*
+Create the name of the Git config Secret.
+*/}}
+{{- define "git.config.secretName" -}}
+{{- if .Values.git.config.enabled }}
+    {{- if .Values.git.config.secretName -}}
+        {{ default "default" .Values.git.config.secretName }}
+    {{- else -}}
+        {{ default (printf "%s-git-config" (include "flux.fullname" .)) }}
+{{- end -}}
+{{- end }}
+{{- end }}

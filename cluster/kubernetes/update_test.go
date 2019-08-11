@@ -3,8 +3,8 @@ package kubernetes
 import (
 	"testing"
 
-	"github.com/weaveworks/flux"
 	"github.com/weaveworks/flux/image"
+	"github.com/weaveworks/flux/resource"
 )
 
 type update struct {
@@ -25,7 +25,7 @@ func testUpdate(t *testing.T, u update) {
 	for _, container := range u.containers {
 		var out []byte
 		var err error
-		if out, err = updateWorkload([]byte(manifest), flux.MustParseResourceID(u.resourceID), container, id); err != nil {
+		if out, err = updateWorkload([]byte(manifest), resource.MustParseID(u.resourceID), container, id); err != nil {
 			t.Errorf("Failed: %s", err.Error())
 			return
 		}
@@ -471,7 +471,7 @@ spec:
       labels:
         name: authfe
       annotations:
-        prometheus.io.port: "8080"
+        prometheus.io/port: "8080"
     spec:
       # blank comment spacers in the following
       containers:
@@ -522,7 +522,7 @@ spec:
       labels:
         name: authfe
       annotations:
-        prometheus.io.port: "8080"
+        prometheus.io/port: "8080"
     spec:
       # blank comment spacers in the following
       containers:
